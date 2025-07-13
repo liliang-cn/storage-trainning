@@ -1,131 +1,94 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
-	"github.com/jung-kurt/gofpdf"
 	"github.com/yuin/goldmark"
-	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
-	"github.com/yuin/goldmark/text"
 )
 
-// convertToPDF 使用纯 Go 库将 markdown 文件转换为 PDF
+// convertToPDF 使用 wkhtmltopdf 将 markdown 文件转换为 PDF
 func convertToPDF(mdPath string) error {
 	fmt.Printf("Converting: %s\n", mdPath)
 
-	// 1. 读取 Markdown 文件内容
+	// 1. 检查 wkhtmltopdf 是否存在
+	if _, err := exec.LookPath("wkhtmltopdf"); err != nil {
+		return fmt.Errorf("wkhtmltopdf not found in PATH. Please install it from https://wkhtmltopdf.org/")
+	}
+
+	// 2. 读取 Markdown 文件内容
 	mdContent, err := os.ReadFile(mdPath)
 	if err != nil {
 		return fmt.Errorf("could not read markdown file: %w", err)
 	}
 
-	// 2. 初始化 PDF 对象
-	pdf := gofpdf.New("P", "mm", "A4", "")
-	pdf.AddPage()
-	pdf.SetFont("Arial", "", 12)
-	pdf.SetMargins(20, 20, 20)
-
-	// 3. 解析 Markdown AST
+	// 3. 将 Markdown 转换为 HTML
+	var htmlBuffer bytes.Buffer
 	mdParser := goldmark.New(
 		goldmark.WithExtensions(extension.GFM),
-	).Parser()
-	rootNode := mdParser.Parse(text.NewReader(mdContent))
-
-	// 4. 遍历 AST 并渲染到 PDF
-	err = walkAndRenderPDF(pdf, rootNode, mdContent)
-	if err != nil {
-		return fmt.Errorf("could not render pdf: %w", err)
+	)
+	if err := mdParser.Convert(mdContent, &htmlBuffer); err != nil {
+		return fmt.Errorf("could not convert markdown to html: %w", err)
 	}
 
-	// 5. 定义并保存 PDF 文件
-	pdfPath := strings.TrimSuffix(mdPath, filepath.Ext(mdPath)) + ".pdf"
-	err = pdf.OutputFileAndClose(pdfPath)
+	// 添加一些样式，特别是针对中文字体
+	htmlWithStyle := fmt.Sprintf(`
+	<html>
+	<head>
+		<meta charset="UTF-8">
+		<style>
+			body { font-family: "Source Han Sans", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; }
+			pre { background-color: #f0f0f0; padding: 10px; border-radius: 5px; }
+			code { font-family: "Courier New", monospace; }
+		</style>
+	</head>
+	<body>
+		%s
+	</body>
+	</html>`, htmlBuffer.String())
+
+	// 4. 创建一个临时的 HTML 文件
+	tempHTMLFile, err := os.CreateTemp("", "md2pdf-*.html")
 	if err != nil {
-		return fmt.Errorf("could not save pdf: %w", err)
+		return fmt.Errorf("could not create temporary html file: %w", err)
+	}
+	defer os.Remove(tempHTMLFile.Name()) // 确保临时文件被删除
+
+	if _, err := tempHTMLFile.WriteString(htmlWithStyle); err != nil {
+		return fmt.Errorf("could not write to temporary html file: %w", err)
+	}
+	tempHTMLFile.Close()
+
+	// 5. 定义输出的 PDF 文件路径
+	pdfPath := strings.TrimSuffix(mdPath, filepath.Ext(mdPath)) + ".pdf"
+
+	// 6. 执行 wkhtmltopdf 命令
+	cmd := exec.Command("wkhtmltopdf",
+		"--load-error-handling", "ignore", // 忽略网络错误
+		"--enable-local-file-access", // 允许访问本地文件 (例如图片)
+		"--encoding", "utf-8",
+		tempHTMLFile.Name(),
+		pdfPath,
+	)
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	err = cmd.Run()
+	if err != nil {
+		// 即使 wkhtmltopdf 返回错误，也检查一下 PDF 文件是否生成
+		if fileInfo, statErr := os.Stat(pdfPath); statErr == nil && fileInfo.Size() > 0 {
+			fmt.Printf("Successfully created with non-critical errors: %s\n", pdfPath)
+			return nil // 文件已生成，忽略错误
+		}
+		return fmt.Errorf("wkhtmltopdf execution failed: %w\nStderr: %s", err, stderr.String())
 	}
 
 	fmt.Printf("Successfully created: %s\n", pdfPath)
 	return nil
-}
-
-// walkAndRenderPDF 遍历 AST 节点并将其内容写入 PDF
-func walkAndRenderPDF(pdf *gofpdf.Fpdf, node ast.Node, source []byte) error {
-	return ast.Walk(node, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
-		if !entering {
-			// 只在进入节点时处理
-			return ast.WalkContinue, nil
-		}
-
-		switch n.Kind() {
-		case ast.KindHeading:
-			heading := n.(*ast.Heading)
-			level := heading.Level
-			content := string(n.Text(source))
-
-			// 根据标题级别设置字体大小和样式
-			switch level {
-			case 1:
-				pdf.SetFont("Arial", "B", 24)
-				pdf.Ln(10)
-			case 2:
-				pdf.SetFont("Arial", "B", 18)
-				pdf.Ln(8)
-			case 3:
-				pdf.SetFont("Arial", "B", 14)
-				pdf.Ln(6)
-			default:
-				pdf.SetFont("Arial", "B", 12)
-				pdf.Ln(4)
-			}
-			pdf.Cell(0, 10, content)
-			pdf.Ln(6)
-			pdf.SetFont("Arial", "", 12) // 恢复默认字体
-
-		case ast.KindParagraph:
-			content := string(n.Text(source))
-			pdf.Write(5, content)
-			pdf.Ln(8)
-
-		case ast.KindList:
-			list := n.(*ast.List)
-			// 为列表项添加缩进
-			pdf.SetLeftMargin(pdf.GetX() + 5)
-			// 遍历子节点（列表项）
-			for c, i := n.FirstChild(), 1; c != nil; c, i = c.NextSibling(), i+1 {
-				item := c.(*ast.ListItem)
-				itemText := string(item.Text(source))
-				if list.IsOrdered() {
-					pdf.Write(5, fmt.Sprintf("%d. %s", i, itemText))
-				} else {
-					pdf.Write(5, fmt.Sprintf("- %s", itemText))
-				}
-				pdf.Ln(5)
-			}
-			pdf.SetLeftMargin(20) // 恢复边距
-			pdf.Ln(5)
-			return ast.WalkSkipChildren, nil // 已经手动处理子节点
-
-		case ast.KindCodeBlock, ast.KindFencedCodeBlock:
-			pdf.SetFont("Courier", "", 10)
-			pdf.SetFillColor(240, 240, 240) // 浅灰色背景
-			var content string
-			for i := 0; i < n.Lines().Len(); i++ {
-				line := n.Lines().At(i)
-				content += string(line.Value(source))
-			}
-			pdf.MultiCell(0, 5, content, "1", "L", true)
-			pdf.SetFont("Arial", "", 12) // 恢复默认字体
-			pdf.Ln(5)
-
-		case ast.KindThematicBreak: // 正确的类型是 ThematicBreak
-			pdf.Line(pdf.GetX(), pdf.GetY(), 210-pdf.GetX(), pdf.GetY())
-			pdf.Ln(5)
-		}
-
-		return ast.WalkContinue, nil
-	})
 }
