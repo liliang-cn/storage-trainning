@@ -23,7 +23,7 @@
 ### 2. Kubernetes 核心架构
 Kubernetes 集群由两种主要类型的节点组成：**控制平面节点 (Control Plane Nodes)** 和 **工作节点 (Worker Nodes)**。
 
-![K8s Architecture](https://d33wubrfki0l68.cloudfront.net/2475489eaf2033f99d5581e45a50668853a73252/a7143/images/docs/components-of-kubernetes.svg)
+![K8s Architecture](https://kubernetes.io/images/docs/components-of-kubernetes.svg)
 
 #### a. 控制平面 (Control Plane) - 集群的大脑
 控制平面负责做出全局决策，例如调度 Pod、检测和响应集群事件等。它由以下几个关键组件构成：

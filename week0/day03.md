@@ -29,7 +29,7 @@
 
 当集群内的任何一个客户端（例如另一个 Pod）尝试访问 Service 的 ClusterIP 时，节点上的 `kube-proxy` 组件会拦截这个请求，并根据 `EndpointSlice` 中的列表，从后端的健康 Pod 中选择一个，然后将流量转发过去，从而实现了负载均衡。
 
-![Service Architecture](https://miro.medium.com/v2/resize:fit:1200/1*OBWhC0b_n6xG_a_msH2uFw.png)
+![Service Architecture](https://learnk8s.io/images/service-clusterip.svg)
 
 ### 3. Service 的类型
 `Service` 有多种类型，用于满足不同的暴露需求：
